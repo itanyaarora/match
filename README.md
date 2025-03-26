@@ -54,16 +54,6 @@ python rcb_api_checker.py --date "2025-05-03"
 python rcb_api_checker.py --test
 ```
 
-### Run in background:
-```bash
-./run_monitor.sh
-```
-
-### Stop the monitor:
-```bash
-./stop_monitor.sh
-```
-
 ## Configuration
 
 - `CHECK_INTERVAL`: Time between API checks (default: 30 seconds)
