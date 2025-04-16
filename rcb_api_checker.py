@@ -18,8 +18,7 @@ logging.basicConfig(
 
 # Constants
 API_URL = "https://rcbmpapi.ticketgenie.in/ticket/eventlist/O"
-CHECK_INTERVAL = 30  # Check every 30 seconds
-
+CHECK_INTERVAL = 1  # Check every 1 second
 # Telegram configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_IDS = os.getenv('TELEGRAM_CHAT_IDS', '').split(',')
