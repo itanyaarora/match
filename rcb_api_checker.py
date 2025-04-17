@@ -28,24 +28,24 @@ PAGERDUTY_URL = "https://events.pagerduty.com/v2/enqueue"
 PAGERDUTY_ROUTING_KEY = os.getenv('PAGERDUTY_ROUTING_KEY')
 
 def send_pagerduty(title, message):
-     """Send notification to PagerDuty"""
+    """Send notification to PagerDuty"""
     try:
-         payload = {
-             "payload": {
-                 "summary": title,
-                 "severity": "critical",
-                 "source": message
-             },
-             "routing_key": PAGERDUTY_ROUTING_KEY,
-             "event_action": "trigger"
-         }
-         response = requests.post(PAGERDUTY_URL, json=payload)
-         response.raise_for_status()
-         logging.info("PagerDuty notification sent successfully")
-         return True
+        payload = {
+            "payload": {
+                "summary": title,
+                "severity": "critical",
+                "source": message
+            },
+            "routing_key": PAGERDUTY_ROUTING_KEY,
+            "event_action": "trigger"
+        }
+        response = requests.post(PAGERDUTY_URL, json=payload)
+        response.raise_for_status()
+        logging.info("PagerDuty notification sent successfully")
+        return True
     except Exception as e:
-         logging.error(f"Failed to send PagerDuty notification: {str(e)}")
-         return False
+        logging.error(f"Failed to send PagerDuty notification: {str(e)}")
+        return False
 
 def send_telegram(message):
      """Send message to all Telegram recipients"""
