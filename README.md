@@ -46,7 +46,7 @@ python rcb_api_checker.py --team "Delhi Capitals"
 
 ### Monitor tickets for a specific date:
 ```bash
-python rcb_api_checker.py --date "2025-05-03"
+python rcb_api_checker.py --date "2025-05-13"
 ```
 
 ### Test notifications:
