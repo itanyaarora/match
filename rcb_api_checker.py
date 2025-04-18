@@ -27,6 +27,10 @@ TELEGRAM_CHAT_IDS = os.getenv('TELEGRAM_CHAT_IDS', '').split(',')
 PAGERDUTY_URL = "https://events.pagerduty.com/v2/enqueue"
 PAGERDUTY_ROUTING_KEY = os.getenv('PAGERDUTY_ROUTING_KEY')
 
+# Notification tracking
+notification_count = {}  # Track notifications per match
+ticket_status = {}  # Track ticket availability status per match
+
 def send_pagerduty(title, message):
     """Send notification to PagerDuty"""
     try:
@@ -133,33 +137,59 @@ def check_api(target_team=None, target_date=None, iteration_count=0):
                     logging.info(f"🎯 Found target date match: {match['event_Display_Date']}")
 
             if is_target_match:
-                logging.info(f"Match Status: {match.get('event_Button_Text', 'Unknown')}")
+                match_id = match['event_Code']
+                current_status = match.get('event_Button_Text', 'Unknown')
+                logging.info(f"Match Status: {current_status}")
+                
+                # Initialize notification tracking for this match if needed
+                if match_id not in notification_count:
+                    notification_count[match_id] = 0
+                    ticket_status[match_id] = current_status
 
-                if match.get('event_Button_Text') == 'BUY TICKETS':
-                    logging.info("🎟️ TICKETS AVAILABLE!")
-                    booking_link = f"https://shop.royalchallengers.com/ticket?event={match['event_Code']}"
+                if current_status == 'BUY TICKETS':
+                    # Check if this is a new availability event
+                    if ticket_status[match_id] != 'BUY TICKETS':
+                        # Reset notification count for this match as this is a new availability event
+                        notification_count[match_id] = 0
+                    
+                    # Update ticket status
+                    ticket_status[match_id] = 'BUY TICKETS'
+                    
+                    # Only send notifications if we've sent fewer than 2 for this availability event
+                    if notification_count[match_id] < 2:
+                        logging.info("🎟️ TICKETS AVAILABLE! Sending notification")
+                        booking_link = f"https://shop.royalchallengers.com/ticket?event={match['event_Code']}"
 
-                    message = (
-                        f"<b>🚨 RCB MATCH TICKETS AVAILABLE! 🚨</b>\n\n"
-                        f"<b>Match:</b> {match['event_Name']}\n"
-                        f"<b>Date:</b> {match['event_Display_Date']}\n"
-                        f"<b>Venue:</b> {match['venue_Name']}, {match['city_Name']}\n"
-                        f"<b>Price Range:</b> {match['event_Price_Range']}\n\n"
-                        f"<b>Quick Links:</b>\n"
-                        f"• <a href='{booking_link}'>Book Tickets Now</a>\n"
-                        f"• <a href='https://shop.royalchallengers.com/ticket'>RCB Ticket Page</a>"
-                    )
+                        message = (
+                            f"<b>🚨 RCB MATCH TICKETS AVAILABLE! 🚨</b>\n\n"
+                            f"<b>Match:</b> {match['event_Name']}\n"
+                            f"<b>Date:</b> {match['event_Display_Date']}\n"
+                            f"<b>Venue:</b> {match['venue_Name']}, {match['city_Name']}\n"
+                            f"<b>Price Range:</b> {match['event_Price_Range']}\n\n"
+                            f"<b>Quick Links:</b>\n"
+                            f"• <a href='{booking_link}'>Book Tickets Now</a>\n"
+                            f"• <a href='https://shop.royalchallengers.com/ticket'>RCB Ticket Page</a>"
+                        )
 
-                    telegram_success = send_telegram(message)
-                    pagerduty_success = send_pagerduty(
-                        f"RCB Tickets Available - {match['event_Name']}",
-                        f"Tickets available for {match['event_Name']} on {match['event_Display_Date']}"
-                    )
+                        telegram_success = send_telegram(message)
+                        pagerduty_success = send_pagerduty(
+                            f"RCB Tickets Available - {match['event_Name']}",
+                            f"Tickets available for {match['event_Name']} on {match['event_Display_Date']}"
+                        )
 
-                    if telegram_success and pagerduty_success:
-                        logging.info("✅ Notifications sent successfully!")
+                        if telegram_success and pagerduty_success:
+                            logging.info("✅ Notifications sent successfully!")
+                            notification_count[match_id] += 1
+                            logging.info(f"Notification count for this match: {notification_count[match_id]}/2")
+                        else:
+                            logging.error("❌ Some notifications failed to send")
                     else:
-                        logging.error("❌ Some notifications failed to send")
+                        logging.info(f"🔔 Already sent {notification_count[match_id]} notifications for this availability event. Not sending more.")
+                else:
+                    # Update status if tickets are no longer available
+                    if ticket_status[match_id] == 'BUY TICKETS':
+                        logging.info("🚫 Tickets are no longer available. Will notify when they become available again.")
+                    ticket_status[match_id] = current_status
 
     except requests.exceptions.RequestException as e:
         logging.error(f"❌ Network error occurred: {str(e)}")
