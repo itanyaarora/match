@@ -4,6 +4,8 @@ import logging
 from datetime import datetime
 import argparse
 import os
+import json  # ← NEW: for hashing/comparing responses
+import hashlib  # ← NEW: for detecting response changes
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -30,6 +32,13 @@ PAGERDUTY_ROUTING_KEY = os.getenv('PAGERDUTY_ROUTING_KEY')
 # Notification tracking
 notification_count = {}  # Track notifications per match
 ticket_status = {}  # Track ticket availability status per match
+
+# ──────────────────────────────────────────────────────────
+# ← NEW: Track the last API response to detect ANY change
+# ──────────────────────────────────────────────────────────
+last_response_hash = None
+last_response_data = None
+# ──────────────────────────────────────────────────────────
 
 def send_pagerduty(title, message):
     """Send notification to PagerDuty"""
@@ -92,10 +101,95 @@ def test_notifications():
 
     return telegram_success and pagerduty_success
 
+
+# ──────────────────────────────────────────────────────────
+# ← NEW: Helper to compute a hash of the API response
+# ──────────────────────────────────────────────────────────
+def get_response_hash(data):
+    """Generate a hash of the API response to detect changes."""
+    serialized = json.dumps(data, sort_keys=True)
+    return hashlib.md5(serialized.encode()).hexdigest()
+# ──────────────────────────────────────────────────────────
+
+
+# ──────────────────────────────────────────────────────────
+# ← NEW: Build a human-readable diff summary
+# ──────────────────────────────────────────────────────────
+def build_change_summary(old_data, new_data):
+    """Compare old and new API responses and return a readable summary."""
+    old_results = old_data.get('result', []) if old_data else []
+    new_results = new_data.get('result', [])
+
+    old_codes = {m['event_Code'] for m in old_results} if old_results else set()
+    new_codes = {m['event_Code'] for m in new_results} if new_results else set()
+
+    added_codes = new_codes - old_codes
+    removed_codes = old_codes - new_codes
+    common_codes = old_codes & new_codes
+
+    lines = []
+
+    # Case 1: Results appeared from empty
+    if not old_results and new_results:
+        lines.append("🆕 <b>Matches have appeared on the API!</b> (was empty before)\n")
+        for m in new_results:
+            lines.append(
+                f"  • <b>{m.get('event_Name', 'Unknown')}</b>\n"
+                f"    Date: {m.get('event_Display_Date', 'N/A')}\n"
+                f"    Status: {m.get('event_Button_Text', 'N/A')}\n"
+                f"    Price: {m.get('event_Price_Range', 'N/A')}"
+            )
+        return "\n".join(lines)
+
+    # Case 2: Results disappeared
+    if old_results and not new_results:
+        lines.append("⚠️ <b>All matches have been removed from the API!</b> (response is now empty)")
+        return "\n".join(lines)
+
+    # Case 3: New matches added
+    if added_codes:
+        lines.append(f"🆕 <b>{len(added_codes)} new match(es) added:</b>")
+        for m in new_results:
+            if m['event_Code'] in added_codes:
+                lines.append(
+                    f"  • <b>{m.get('event_Name', 'Unknown')}</b>\n"
+                    f"    Date: {m.get('event_Display_Date', 'N/A')}\n"
+                    f"    Status: {m.get('event_Button_Text', 'N/A')}"
+                )
+
+    # Case 4: Matches removed
+    if removed_codes:
+        lines.append(f"❌ <b>{len(removed_codes)} match(es) removed</b>")
+
+    # Case 5: Check for field-level changes on existing matches
+    if common_codes:
+        old_map = {m['event_Code']: m for m in old_results}
+        new_map = {m['event_Code']: m for m in new_results}
+        for code in common_codes:
+            old_m = old_map[code]
+            new_m = new_map[code]
+            changes = []
+            for key in new_m:
+                if str(old_m.get(key)) != str(new_m.get(key)):
+                    changes.append(f"    <b>{key}:</b> {old_m.get(key)} → {new_m.get(key)}")
+            if changes:
+                lines.append(f"🔄 <b>Changes in {new_m.get('event_Name', code)}:</b>")
+                lines.extend(changes)
+
+    return "\n".join(lines) if lines else None
+# ──────────────────────────────────────────────────────────
+
+
 def check_api(target_team=None, target_date=None, iteration_count=0):
     """Check the RCB API and log the response"""
+    # ← NEW: access global tracking variables
+    global last_response_hash, last_response_data
+
     try:
-        logging.info(f"🔄 Iteration #{iteration_count} - Checking API for {'team: ' + target_team if target_team else 'date: ' + target_date}")
+        logging.info(f"🔄 Iteration #{iteration_count} - Checking API" +
+                     (f" for team: {target_team}" if target_team else
+                      f" for date: {target_date}" if target_date else
+                      " for any changes"))  # ← MODIFIED: support no-filter mode
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -114,9 +208,43 @@ def check_api(target_team=None, target_date=None, iteration_count=0):
         data = response.json()
         logging.info(f"✅ API response received successfully")
 
+        # ──────────────────────────────────────────────────
+        # ← NEW: Detect ANY change in the full API response
+        # ──────────────────────────────────────────────────
+        current_hash = get_response_hash(data)
+
+        if last_response_hash is None:
+            # First run — just store the baseline
+            last_response_hash = current_hash
+            last_response_data = data
+            logging.info("📸 Baseline response stored (first run)")
+        elif current_hash != last_response_hash:
+            logging.info("🚨 API RESPONSE HAS CHANGED!")
+
+            change_summary = build_change_summary(last_response_data, data)
+            if change_summary:
+                message = (
+                    f"<b>🚨 RCB API CHANGE DETECTED 🚨</b>\n\n"
+                    f"{change_summary}\n\n"
+                    f"<b>🔗 Quick Links:</b>\n"
+                    f"• <a href='https://shop.royalchallengers.com/ticket'>RCB Ticket Page</a>"
+                )
+                send_telegram(message)
+                send_pagerduty(
+                    "RCB API Response Changed",
+                    f"Change detected at {datetime.now().strftime('%H:%M:%S')}"
+                )
+
+            # Update stored response
+            last_response_hash = current_hash
+            last_response_data = data
+        else:
+            logging.info("🔄 No change in API response")
+        # ──────────────────────────────────────────────────
+
         if not data.get('result'):
-            logging.warning("⚠️ No matches found in API response")
-            return
+            logging.warning("⚠️ No matches found in API response (empty result)")
+            return  # ← MODIFIED: still returns, but change detection above already handled it
 
         matches = data['result']
         logging.info(f"Found {len(matches)} total matches in response")
@@ -125,7 +253,12 @@ def check_api(target_team=None, target_date=None, iteration_count=0):
             # Check if this is our target match
             is_target_match = False
 
-            if target_team:
+            # ──────────────────────────────────────────────
+            # ← MODIFIED: if no team/date filter, ALL matches are targets
+            # ──────────────────────────────────────────────
+            if not target_team and not target_date:
+                is_target_match = True
+            elif target_team:
                 is_target_match = (target_team.lower() in match['team_1'].lower() or
                                  target_team.lower() in match['team_2'].lower())
                 if is_target_match:
@@ -198,10 +331,14 @@ def check_api(target_team=None, target_date=None, iteration_count=0):
 
 def main():
     parser = argparse.ArgumentParser(description='RCB Ticket API Checker')
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--team', help='Team to monitor (e.g., "Delhi Capitals")')
-    group.add_argument('--date', help='Date to monitor (format: YYYY-MM-DD)')
+    # ──────────────────────────────────────────────────────
+    # ← MODIFIED: team and date are now OPTIONAL (not mutually exclusive required)
+    # ──────────────────────────────────────────────────────
+    parser.add_argument('--team', help='Team to monitor (e.g., "Delhi Capitals")')
+    parser.add_argument('--date', help='Date to monitor (format: YYYY-MM-DD)')
     parser.add_argument('--test', action='store_true', help='Test notifications only')
+    # ──────────────────────────────────────────────────────
+
     args = parser.parse_args()
 
     if args.test:
@@ -212,12 +349,19 @@ def main():
     start_time = datetime.now()
     iteration_count = 0
 
+    # ──────────────────────────────────────────────────────
+    # ← MODIFIED: startup message handles all 3 modes
+    # ──────────────────────────────────────────────────────
     if args.team:
         logging.info(f"🎯 Starting RCB API Checker - Monitoring matches with {args.team}")
         send_telegram(f"🔄 RCB Ticket Monitor is running!\n\nMonitoring tickets for match against {args.team}")
-    else:
+    elif args.date:
         logging.info(f"🎯 Starting RCB API Checker - Monitoring match on {args.date}")
         send_telegram(f"🔄 RCB Ticket Monitor is running!\n\nMonitoring tickets for match on {args.date}")
+    else:
+        logging.info("🎯 Starting RCB API Checker - Monitoring ALL changes to the API response")
+        send_telegram("🔄 RCB Ticket Monitor is running!\n\nMonitoring ALL changes to the RCB ticket API (no team/date filter)")
+    # ──────────────────────────────────────────────────────
 
     while True:
         try:
