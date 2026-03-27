@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 
 # Constants
-API_URL = "https://rcbmpapi.ticketgenie.in/ticket/eventlist/O"
+API_URL = "https://rcbscaleapi.ticketgenie.in/ticket/eventlist/O"
 CHECK_INTERVAL = 1  # Check every 1 second
 # Telegram configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
